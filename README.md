@@ -1,95 +1,172 @@
-# LLM Output Bias Detection
+# Can Fine-Tuning Language Models on Bias Itself Introduce Bias?
 
-A production-grade machine learning system for detecting stereotypical bias in LLM-generated text using the StereoSet benchmark dataset and fine-tuned MiniLM model.
-Try it out here: https://appapppy-ztzucs5yg5c9wpc8xfx885.streamlit.app/
-## 🎯 Problem Statement
+A research project investigating whether parameter-efficient fine-tuning (LoRA) on bias-annotated data (StereoSet) inadvertently reshapes a model's own representational biases — evaluated on CrowS-Pairs and SST-2 using frozen sentence embeddings.
 
-Large Language Models (LLMs) can inadvertently generate text that reinforces harmful stereotypes about various demographic groups. This project implements a bias detection system that classifies whether an LLM's response:
+---
 
-- **Reinforces stereotypes** (stereotype)
-- **Challenges stereotypes** (anti-stereotype)
-- **Is unrelated** to the stereotypical context (unrelated)
+## 🔬 Research Question
 
-This capability is essential for building responsible AI systems and ensuring safe deployment of language models in production environments.
+Large language models inherit societal biases from their training data. A natural mitigation strategy is to fine-tune models on bias-annotated benchmarks so they can *detect* stereotypical text. But does this exposure itself reshape the model's internal biases?
 
-## 🔬 Why This Matters
+We investigate this by comparing:
+- **Base MiniLM**: Frozen `sentence-transformers/all-MiniLM-L6-v2` encoder
+- **LoRA MiniLM**: Same encoder + LoRA adapters (r=8, α=32) fine-tuned on StereoSet for stereotype classification
 
-1. **AI Safety**: Preventing the amplification of societal biases through AI systems
-2. **Regulatory Compliance**: Meeting emerging AI ethics and fairness requirements
-3. **User Trust**: Building AI products that users can trust to be fair and unbiased
-4. **Responsible Development**: Enabling developers to audit LLM outputs before deployment
+Both models are evaluated using **frozen sentence embeddings** on two downstream tasks.
 
-## 📊 Dataset
+## 📊 Key Findings
 
-**StereoSet** (McGill-NLP) - A crowd-sourced benchmark for measuring stereotypical bias in language models.
+| Metric | Base MiniLM | LoRA MiniLM | Interpretation |
+|--------|:-----------:|:-----------:|----------------|
+| **CrowS-Pairs Stereotype Score** | 0.511 | 0.422 | LoRA *over-corrects* → anti-stereotypical preference |
+| **CrowS-Pairs F1** | 0.650 | 0.562 | Shifted bias detection behavior |
+| **SST-2 Accuracy** | 0.808 | 0.808 | General NLU capability preserved |
+| **SST-2 F1** | 0.811 | 0.808 | Negligible difference |
+| **Flip Rate** | — | ~40% | 604/1,508 pairs changed preference |
 
-| Attribute | Value |
-|-----------|-------|
-| Source | HuggingFace: `McGill-NLP/stereoset` |
-| Subset | `intersentence` |
-| Total Samples | 6,369 |
-| Classes | 3 (balanced) |
-| Bias Types | Race, Gender, Profession, Religion |
+### Key Takeaways
 
-Each sample consists of a context sentence and multiple candidate continuations with gold labels indicating stereotype, anti-stereotype, or unrelated classifications.
+1. **Over-correction, not correction**: LoRA fine-tuning on StereoSet doesn't neutralize bias (SS→0.50) — it inverts it (SS: 0.511→0.422), introducing a mirror-image anti-stereotypical preference.
+2. **Category heterogeneity**: Age (−0.276) and religion (−0.228) shift most dramatically; disability is unchanged; socioeconomic bias actually *increases* (+0.093).
+3. **Preserved NLU**: SST-2 sentiment accuracy is identical (80.8%), confirming bias-related changes are orthogonal to general task features.
 
-## 🏗️ Modeling Approaches
+---
 
-### 1. Logistic Regression (Classical Baseline)
-- **Features**: TF-IDF vectorization (10K features, uni/bi-grams)
-- **Model**: Multinomial Logistic Regression with balanced class weights
-- **Purpose**: Establish a classical ML baseline for comparison
+## 🏗️ Architecture
 
-### 2. Frozen MiniLM + Linear Head
-- **Base Model**: `sentence-transformers/all-MiniLM-L6-v2`
-- **Approach**: Frozen encoder with trainable classification head
-- **Pooling**: CLS token
+```
+sentence-transformers/all-MiniLM-L6-v2  (22.7M params, 384-dim)
+├── Base MiniLM:  Frozen encoder → Mean pooling → 384-dim embeddings
+└── LoRA MiniLM:  Encoder + LoRA(r=8, α=32, target=Q,V) → Mean pooling → 384-dim embeddings
+                  LoRA adds 73,728 trainable params (0.32% of total)
+```
 
-### 3. LoRA Fine-tuned MiniLM (Main Model)
-- **Base Model**: `sentence-transformers/all-MiniLM-L6-v2`
-- **Approach**: Parameter-Efficient Fine-Tuning (PEFT) with LoRA adapters
-- **LoRA Config**: r=8, alpha=32, dropout=0.1, target=query,value
-- **Pooling**: Mean pooling
-- **Trainable Parameters**: 73,728 (0.32% of total)
+### Evaluation Pipeline
 
-⚠️Note: The frozen MiniLM and LoRA MiniLM are trained on google colab for GPU access and then the final model weights/adapters (in case of the fine-tuned model) are downloaded for further usage in local system. The colab notebooks for training both models are available in the notebooks folder and can be downloaded for personal use.
+```
+┌─────────────────┐     ┌─────────────────┐
+│   Base MiniLM   │     │   LoRA MiniLM    │
+│   (frozen)      │     │   (merged LoRA)  │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         ▼                       ▼
+    Mean-Pooled              Mean-Pooled
+    Embeddings               Embeddings
+    (384-dim)                (384-dim)
+         │                       │
+         ├───────────┬───────────┤
+         │           │           │
+         ▼           ▼           ▼
+    CrowS-Pairs   SST-2     Sentence
+    Bias Eval     Sentiment  Analysis
+                  (LogReg)
+```
 
-### Why LoRA/PEFT?
+---
 
-LoRA (Low-Rank Adaptation) enables efficient fine-tuning by:
-- Training only 0.32% of parameters while achieving superior performance
-- Preserving the pre-trained knowledge of the base model
-- Enabling quick adaptation to new domains
-- Reducing storage requirements (only adapter weights need to be saved)
+## 📁 Project Structure
 
-## 📈 Evaluation Results
+```
+Can-Fine-Tuning-Language-Models-on-Bias-itself-Introduce-Bias/
+│
+├── paper/                          # EMNLP 2026 short paper
+│   ├── paper.tex                   # LaTeX source
+│   └── references.bib              # Bibliography
+│
+├── models/                         # Saved model weights
+│   ├── frozen_minilm/              # Base encoder (full state dict)
+│   │   ├── model.pt
+│   │   ├── tokenizer.json
+│   │   └── ...
+│   └── lora_minilm/                # LoRA-adapted encoder
+│       ├── adapter/                # PEFT adapter weights
+│       │   ├── adapter_config.json
+│       │   └── adapter_model.safetensors
+│       └── classifier.pt           # StereoSet classifier head
+│
+├── data/                           # Evaluation datasets
+│   ├── CrowS/
+│   │   └── crows_pairs_anonymized.csv
+│   └── SST-2/
+│       ├── train.tsv
+│       └── test.tsv
+│
+├── src/                            # Source code
+│   ├── embeddings/                 # Embedding extraction
+│   │   ├── __init__.py
+│   │   └── extract_embeddings.py   # EmbeddingExtractor class
+│   │
+│   ├── evaluation/                 # Evaluation modules
+│   │   ├── metrics.py              # General classification metrics
+│   │   ├── crows_pairs_eval.py     # CrowS-Pairs bias evaluation
+│   │   ├── sentiment_eval.py       # SST-2 sentiment evaluation
+│   │   └── analysis.py             # Plots & sentence-level analysis
+│   │
+│   ├── models/                     # Model implementations (StereoSet)
+│   │   ├── frozen_minilm.py        # Frozen MiniLM classifier
+│   │   ├── lora_minilm.py          # LoRA MiniLM classifier
+│   │   └── logistic_regression.py  # TF-IDF baseline
+│   │
+│   ├── inference/                  # Production inference
+│   │   └── predictor.py            # BiasPredictor API
+│   │
+│   ├── utils/
+│   │   ├── config.py               # Configuration & paths
+│   │   └── logger.py               # Logging setup
+│   │
+│   ├── load_data.py                # StereoSet data loading
+│   └── preprocess.py               # Data preprocessing & splits
+│
+├── scripts/                        # Reproducible experiment scripts
+│   ├── run_pipeline.py             # Full pipeline (CrowS + SST-2 + analysis)
+│   ├── run_crows.py                # CrowS-Pairs evaluation only
+│   └── run_sentiment.py            # SST-2 evaluation only
+│
+├── notebooks/                      # Training notebooks (Colab)
+│   ├── frozen_minilm.ipynb
+│   └── lora_minilm.ipynb
+│
+├── results/                        # Generated outputs (not committed)
+│   ├── crows_pairs/
+│   │   ├── overall_metrics.json
+│   │   ├── category_metrics_base.csv
+│   │   ├── category_metrics_lora.csv
+│   │   ├── flip_analysis.csv
+│   │   ├── score_distribution.png
+│   │   └── category_comparison.png
+│   ├── sentiment/
+│   │   ├── metrics.json
+│   │   └── confusion_matrices.png
+│   ├── analysis/
+│   │   ├── representative_examples.csv
+│   │   └── behavioral_diff.png
+│   └── summary_table.md
+│
+├── streamlit_app.py                # Interactive demo
+├── requirements.txt
+├── .env.example
+└── README.md
+```
 
-| Model | Accuracy | F1 Score(Macro) |
-|-------|----------|-----------|
-| Logistic Regression | 0.3944 | 0.3939 |
-| Frozen MiniLM | 54.29% | 54.21% |
-| **LoRA MiniLM** | **75.00%** | **74.56%** |
-
-
-The LoRA fine-tuned model achieves a **20+ percentage point improvement** over the frozen baseline, demonstrating the effectiveness of parameter-efficient fine-tuning for this task.
+---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Python 3.9+
-- pip
+- GPU recommended (CUDA-capable) for embedding extraction
 
 ### Installation
 
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd llm-output-bias-detection
+cd Can-Fine-Tuning-Language-Models-on-Bias-itself-Introduce-Bias
 
 # Create virtual environment
 python -m venv venv
-venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/Mac
+source venv/bin/activate        # Linux/Mac
+# venv\Scripts\activate         # Windows
 
 # Install dependencies
 pip install -r requirements.txt
@@ -97,113 +174,102 @@ pip install -r requirements.txt
 
 ### Environment Setup
 
-Create a `.env` file with your HuggingFace token:
-
 ```bash
-# Copy the example file
-copy .env.example .env
-
-# Edit .env and add your token
-HF_TOKEN=your_huggingface_token_here
+# Copy the example env file and add your HuggingFace token
+cp .env.example .env
+# Edit .env → HF_TOKEN=your_huggingface_token_here
 ```
 
-> **Note**: A HuggingFace token is required to download the StereoSet dataset. Get your token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
-
-### Train Logistic Regression Baseline
-
-```bash
-python -m src.models.logistic_regression
-```
-
-### Run the Streamlit Demo
-
-```bash
-streamlit run streamlit_app.py
-```
-
-The demo will be available at `http://localhost:8501`
-
-## 📁 Project Structure
-
-```
-llm-output-bias-detection/
-│
-├── models/                     # Saved model weights
-│   ├── logistic_regression/    # TF-IDF vectorizer + LogReg
-│   ├── frozen_minilm/          # Frozen encoder + classifier
-│   └── lora_minilm/            # LoRA adapters + classifier head
-│       ├── adapter/            # PEFT adapter weights
-│       └── classifier.pt       # Linear head weights
-│
-├── notebooks/                  # Training notebooks (reference only)
-│   ├── frozen_minilm.ipynb     # Frozen baseline training
-│   └── lora_minilm.ipynb       # LoRA fine-tuning
-│
-├── src/                        # Source code
-│   ├── load_data.py            # StereoSet data loading
-│   ├── preprocess.py           # Data preprocessing and splits
-│   │
-│   ├── models/                 # Model implementations
-│   │   ├── logistic_regression.py
-│   │   ├── frozen_minilm.py
-│   │   └── lora_minilm.py
-│   │
-│   ├── evaluation/             # Evaluation utilities
-│   │   └── metrics.py
-│   │
-│   ├── inference/              # Production inference
-│   │   └── predictor.py
-│   │
-│   └── utils/                  # Utilities
-│       ├── config.py
-│       └── logger.py
-│
-├── streamlit_app.py            # Demo application
-├── requirements.txt            # Dependencies
-├── .env.example                # Environment template
-└── README.md                   # This file
-```
-
-## 🔧 Usage
-
-### Python API
-
-```python
-from src.inference.predictor import BiasPredictor
-
-# Initialize predictor (loads LoRA model)
-predictor = BiasPredictor()
-
-# Predict bias
-result = predictor.predict(
-    context="The software engineer was debugging code.",
-    sentence="He stayed up all night fixing bugs."
-)
-
-print(result)
-# {'label': 'stereotype', 'confidence': 0.82, 'label_id': 1}
-```
-
-### Evaluate Custom Model
-
-```python
-from src.models.logistic_regression import LogisticRegressionClassifier
-from src.preprocess import get_train_val_test_split
-
-# Load data with same splits as transformer models
-splits = get_train_val_test_split()
-test_texts, test_labels = splits["test"]
-
-# Load and evaluate
-classifier = LogisticRegressionClassifier.load()
-metrics = classifier.evaluate(test_texts, test_labels)
-print(metrics)
-```
-
-## 📄 License
-
-This project is for educational and demonstration purposes.
+> **Note**: An HF token is needed to download the base `sentence-transformers/all-MiniLM-L6-v2` model from HuggingFace on first run.
 
 ---
 
-*Built with a focus on responsible AI development and production-grade engineering practices.*
+## 🧪 Running Experiments
+
+### Full Pipeline (Recommended)
+
+```bash
+# GPU
+python scripts/run_pipeline.py --device cuda --output-dir results/ --batch-size 64
+
+# CPU (slower, useful for debugging)
+python scripts/run_pipeline.py --device cpu --output-dir results/ --batch-size 8
+```
+
+This runs all evaluations and generates tables + plots in `results/`.
+
+### Individual Evaluations
+
+```bash
+# CrowS-Pairs bias evaluation only
+python scripts/run_crows.py --device cuda --output-dir results/crows_pairs/
+
+# SST-2 sentiment evaluation only
+python scripts/run_sentiment.py --device cuda --output-dir results/sentiment/
+```
+
+### GPU Cluster (SLURM)
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=bias-eval
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:1
+#SBATCH --mem=16G
+#SBATCH --time=01:00:00
+#SBATCH --output=bias-eval_%j.log
+
+conda activate bias-eval
+python scripts/run_pipeline.py --device cuda --output-dir results/ --batch-size 64
+```
+
+---
+
+## 📈 Detailed Results
+
+### CrowS-Pairs: Category-wise Stereotype Scores
+
+| Category | N | Base SS | LoRA SS | Δ |
+|---|:---:|:---:|:---:|:---:|
+| Race-color | 516 | 0.446 | 0.333 | −0.113 |
+| Gender | 262 | 0.569 | 0.519 | −0.050 |
+| Socioeconomic | 172 | 0.314 | 0.407 | **+0.093** |
+| Nationality | 159 | 0.673 | 0.591 | −0.082 |
+| Religion | 105 | 0.695 | 0.467 | −0.228 |
+| Age | 87 | 0.598 | 0.322 | **−0.276** |
+| Sexual orientation | 84 | 0.500 | 0.381 | −0.119 |
+| Physical appearance | 63 | 0.508 | 0.381 | −0.127 |
+| Disability | 60 | 0.533 | 0.533 | 0.000 |
+
+> An unbiased model scores SS = 0.50. Values below 0.50 indicate anti-stereotypical preference.
+
+### SST-2: Sentiment Classification
+
+| Metric | Base MiniLM | LoRA MiniLM |
+|---|:---:|:---:|
+| Accuracy | 0.808 | 0.808 |
+| Precision | 0.796 | 0.806 |
+| Recall | 0.826 | 0.810 |
+| F1 | 0.811 | 0.808 |
+
+---
+
+## 🔧 StereoSet Bias Detection (Original Task)
+
+The LoRA model was originally trained to classify StereoSet text into three categories:
+
+| Model | Accuracy | F1 (Macro) |
+|---|:---:|:---:|
+| Logistic Regression | 39.44% | 39.39% |
+| Frozen MiniLM | 54.29% | 54.21% |
+| **LoRA MiniLM** | **75.00%** | **74.56%** |
+
+---
+
+## 📝 License
+
+This project is for educational and research purposes.
+
+---
+
+*Built with a focus on responsible AI research and reproducible experimental methodology.*

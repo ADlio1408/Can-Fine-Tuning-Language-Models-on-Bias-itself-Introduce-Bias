@@ -59,3 +59,8 @@ logs/
 tmp/
 temp/
 *.tmp
+data/
+
+# Generated results
+results/
+paper/
